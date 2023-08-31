@@ -1,6 +1,4 @@
 import struct
-from capstone import *
-from keystone import *
 
 NOP = b"\x90"
 PREFIX = "let sc = ["
