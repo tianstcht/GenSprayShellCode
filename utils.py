@@ -33,9 +33,10 @@ def PrintShellCode(buf, arch, mode):
         print(f'''  {op(buf[i:i+step])},''')
     print(POSTFIX)
 
-buf1 =  b"\x90\x90\x90\x90\x90\x90"
 
-# test
-PrintShellCode(buf1, 64, "jit")
-PrintShellCode(buf1, 32, "jit")
-PrintShellCode(buf1, 64, "wasm")
+if __name__ == "__main__":
+    # test
+    buf1 =  b"\x90\x90\x90\x90\x90\x90"
+    PrintShellCode(buf1, 64, "jit")
+    PrintShellCode(buf1, 32, "jit")
+    PrintShellCode(buf1, 64, "wasm")
